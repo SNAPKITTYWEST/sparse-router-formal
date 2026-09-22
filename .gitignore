@@ -1,0 +1,11 @@
+target/
+build/
+.lake/
+lake-packages/
+*.o
+*.exe
+*.ppu
+*.compiled
+__pycache__/
+*.pyc
+Cargo.lock

@@ -1,0 +1,31 @@
+[package]
+name = "tensor-hw"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Hardware implementation layer for NraayTensor with explicit state transitions and generation-based safety"
+license = "GPL-3.0-or-later OR Apache-2.0"
+
+[lib]
+name = "tensor_hw"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tensor-hw-abi"
+path = "src/bin/ffi_entry.rs"
+required-features = ["ffi"]
+
+[dependencies]
+thiserror = "1.0"
+atomic = "0.1"
+parking_lot = "0.12"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[features]
+default = ["std"]
+std = []
+ffi = ["std"]
+no_std = []
+
