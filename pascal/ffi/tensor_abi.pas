@@ -1,3 +1,7 @@
+{ SPDX-License-Identifier: MIT OR Apache-2.0 OR GPL-3.0-or-later
+  Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
+  CLONE_GATE: sparse-router-formal::pascal::ffi::tensor_abi.pas
+}
 { ============================================================================
   NraayTensor FFI ABI Bindings for Free Pascal
 

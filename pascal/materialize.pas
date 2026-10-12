@@ -1,3 +1,7 @@
+{ SPDX-License-Identifier: MIT OR Apache-2.0 OR GPL-3.0-or-later
+  Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
+  CLONE_GATE: sparse-router-formal::pascal::materialize.pas
+}
 { Materialization Barrier: Copy-on-write with governance state restoration.
   Restores B_layout=1 and B_own=1 by copying viewed elements to contiguous buffer.
 

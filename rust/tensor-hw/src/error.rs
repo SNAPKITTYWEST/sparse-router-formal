@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later OR Apache-2.0
+// Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
+// CLONE_GATE: sparse-router-formal::rust::tensor-hw::src::error.rs
 //! Error types for hardware tensor layer
 
 use thiserror::Error;
@@ -22,7 +25,11 @@ pub enum HardwareError {
 
     /// Generation counter mismatch (use-after-free detection)
     #[error("Stale generation counter for buffer {buffer_id}: expected {expected}, got {actual}")]
-    StaleGeneration { buffer_id: u64, expected: u64, actual: u64 },
+    StaleGeneration {
+        buffer_id: u64,
+        expected: u64,
+        actual: u64,
+    },
 
     /// Index out of bounds
     #[error("Index out of bounds: [{index}] exceeds dimension size {size}")]

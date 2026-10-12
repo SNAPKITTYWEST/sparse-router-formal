@@ -6,9 +6,9 @@
  *
  * Novel method: routing decisions traverse only the sparse edge set
  * (bounded fan-out per memory region) rather than scanning all workers.
- * Formal invariant: every routed task lands on exactly one worker deque,
- * and region ownership converges to the worker with highest cumulative
- * affinity score (proven in formal/SparseRouter.lean).
+ * Successful routing enqueues exactly once. WORKER_NONE leaves the task
+ * with the caller. The Lean decision model is separate from this executable;
+ * no implementation-refinement or scheduler-liveness proof is claimed.
  */
 
 #ifndef SPARSE_ROUTER_H
@@ -19,10 +19,11 @@
 #include "deque.h"
 
 static inline worker_id_t select_least_loaded(const router_state_t *state) {
-    worker_id_t best = 0;
+    worker_id_t best = WORKER_NONE;
     uint32_t min_load = UINT32_MAX;
     for (uint32_t i = 0; i < state->num_workers; i++) {
-        if (state->workers[i].deque.count < min_load) {
+        if (state->workers[i].deque.count < DEQUE_CAPACITY &&
+            state->workers[i].deque.count < min_load) {
             min_load = state->workers[i].deque.count;
             best = i;
         }
@@ -31,25 +32,37 @@ static inline worker_id_t select_least_loaded(const router_state_t *state) {
 }
 
 static inline worker_id_t raw_route(router_state_t *state, task_t *task) {
+    /* WORKER_NONE means no task was accepted: caller retains it for retry.
+       Callers must externally serialize access to this reference scheduler. */
+    if (state == NULL || task == NULL || state->num_workers == 0 ||
+        state->num_workers > MAX_WORKERS || task->memory_region >= MAX_REGIONS)
+        return WORKER_NONE;
     region_id_t r = task->memory_region;
+    const sparse_edge_set_t *candidates = &state->sparse_edges[r];
+    if (candidates->count > MAX_SPARSE_EDGES) return WORKER_NONE;
+    for (uint32_t i = 0; i < candidates->count; i++)
+        if (candidates->workers[i] >= state->num_workers) return WORKER_NONE;
+    if (state->region_table[r].has_owner &&
+        state->region_table[r].owner >= state->num_workers) return WORKER_NONE;
 
     /* Phase 1: region-owner fast path */
     if (state->region_table[r].has_owner) {
         worker_id_t owner = state->region_table[r].owner;
-        deque_push(&state->workers[owner].deque, task);
-        state->workers[owner].local_count++;
-        state->region_table[r].access_count++;
-        state->region_table[r].last_access_tick = state->global_tick;
-        return owner;
+        if (deque_push(&state->workers[owner].deque, task)) {
+            state->workers[owner].local_count++;
+            state->region_table[r].access_count++;
+            state->region_table[r].last_access_tick = state->global_tick;
+            return owner;
+        }
     }
 
     /* Phase 2: sparse edge traversal — O(MAX_SPARSE_EDGES) not O(num_workers) */
-    const sparse_edge_set_t *candidates = &state->sparse_edges[r];
     worker_id_t best = WORKER_NONE;
     score_t best_score = INT64_MIN;
 
     for (uint32_t i = 0; i < candidates->count; i++) {
         worker_id_t wid = candidates->workers[i];
+        if (state->workers[wid].deque.count >= DEQUE_CAPACITY) continue;
         score_t s = compute_score(&state->workers[wid], task);
         if (s > best_score) {
             best_score = s;
@@ -57,8 +70,7 @@ static inline worker_id_t raw_route(router_state_t *state, task_t *task) {
         }
     }
 
-    if (best != WORKER_NONE) {
-        deque_push(&state->workers[best].deque, task);
+    if (best != WORKER_NONE && deque_push(&state->workers[best].deque, task)) {
         state->workers[best].local_count++;
         state->region_table[r].owner = best;
         state->region_table[r].has_owner = true;
@@ -69,7 +81,8 @@ static inline worker_id_t raw_route(router_state_t *state, task_t *task) {
 
     /* Phase 3: global fallback — no sparse edges for this region */
     worker_id_t fallback = select_least_loaded(state);
-    deque_push(&state->workers[fallback].deque, task);
+    if (fallback == WORKER_NONE || !deque_push(&state->workers[fallback].deque, task))
+        return WORKER_NONE;
     state->workers[fallback].local_count++;
     state->region_table[r].owner = fallback;
     state->region_table[r].has_owner = true;
@@ -81,7 +94,10 @@ static inline worker_id_t raw_route(router_state_t *state, task_t *task) {
 /* Recursive steal chain: if a worker is idle, steal from the
    highest-loaded sparse neighbor, recursively rebalancing. */
 static inline bool recursive_steal(router_state_t *state, worker_id_t thief) {
+    if (state == NULL || state->num_workers == 0 || state->num_workers > MAX_WORKERS ||
+        thief >= state->num_workers) return false;
     worker_t *tw = &state->workers[thief];
+    if (tw->deque.head >= DEQUE_CAPACITY || tw->deque.tail >= DEQUE_CAPACITY) return false;
     if (tw->deque.count > 0) return false;
 
     worker_id_t victim = WORKER_NONE;
@@ -89,9 +105,11 @@ static inline bool recursive_steal(router_state_t *state, worker_id_t thief) {
 
     for (uint32_t r = 0; r < MAX_REGIONS; r++) {
         if (!state->region_table[r].has_owner) continue;
+        if (state->region_table[r].owner >= state->num_workers) continue;
         if (state->region_table[r].owner == thief) continue;
 
         const sparse_edge_set_t *edges = &state->sparse_edges[r];
+        if (edges->count > MAX_SPARSE_EDGES) continue;
         for (uint32_t i = 0; i < edges->count; i++) {
             if (edges->workers[i] == thief) {
                 worker_id_t owner = state->region_table[r].owner;

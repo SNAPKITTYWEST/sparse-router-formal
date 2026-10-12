@@ -1,3 +1,5 @@
+{ CLONE_GATE: sparse-router-formal::src::pascal::transformer_pascal_200.pas
+}
 ﻿(* ========================================================================
  * SOVEREIGN LEVIATHAN NODE LICENSE
  * License-ID: SL-AGPL3-001 | Covenant-Version: 1.0

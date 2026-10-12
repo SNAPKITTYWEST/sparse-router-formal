@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later OR Apache-2.0
+// Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
+// CLONE_GATE: sparse-router-formal::tests::conformance::buffer_lifetime.rs
 //! Buffer Lifetime Tests (T1-T5): Parent-child dropping semantics
 //!
 //! Verifies:

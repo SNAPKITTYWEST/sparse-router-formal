@@ -1,3 +1,7 @@
+{ SPDX-License-Identifier: MIT OR Apache-2.0 OR GPL-3.0-or-later
+  Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
+  CLONE_GATE: sparse-router-formal::pascal::ownership.pas
+}
 { Ownership State Machine: Manages OWNED, SHARED, EXCLUSIVE states.
   Tracks ownership tokens and implements governance state transitions.
 

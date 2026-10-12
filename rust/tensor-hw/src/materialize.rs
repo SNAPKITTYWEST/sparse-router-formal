@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later OR Apache-2.0
+// Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
+// CLONE_GATE: sparse-router-formal::rust::tensor-hw::src::materialize.rs
 //! Materialization barrier: transactional conversion to contiguous memory
 //!
 //! Materializes non-canonical strides into contiguous buffer.
@@ -9,7 +12,7 @@ use crate::error::{HardwareError, Result};
 use crate::view::TensorView;
 
 /// Materialization result with new buffer and view
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct MaterializationResult {
     /// New contiguous buffer
     pub new_buffer: Buffer,
@@ -23,16 +26,11 @@ pub struct MaterializationResult {
 
 /// Transactional materialization barrier
 #[derive(Debug)]
-pub struct MaterializationBarrier {
-    /// Next buffer ID to allocate
-    next_buffer_id: u64,
-}
+pub struct MaterializationBarrier {}
 
 impl MaterializationBarrier {
     pub fn new() -> Self {
-        MaterializationBarrier {
-            next_buffer_id: 2, // 1 is reserved for initial allocation
-        }
+        MaterializationBarrier {}
     }
 
     /// Materialize non-canonical tensor to new contiguous buffer
@@ -49,14 +47,21 @@ impl MaterializationBarrier {
     /// - Source: unchanged (still valid)
     /// - New generation counter
     ///
-    /// **Safety**: Source buffer refcount incremented, then decremented by drop
+    /// **Safety**: Borrows source storage; returns independent destination storage.
     pub fn materialize(
         &mut self,
         source_view: &TensorView,
         source_buffer: &Buffer,
     ) -> Result<MaterializationResult> {
         // Step 1: Validate preconditions
-        source_buffer.validate_generation(source_view.buffer_handle.generation)?;
+        source_view.buffer_handle.validate(source_buffer)?;
+        source_view.validate_metadata()?;
+        crate::memory::MemoryLayout::new(
+            source_buffer.capacity(),
+            source_view.offset,
+            source_view.shape.clone(),
+            source_view.strides.clone(),
+        )?;
 
         if source_view.ownership.is_canonical {
             // Already canonical, no need to materialize
@@ -67,18 +72,17 @@ impl MaterializationBarrier {
 
         // Step 2: Allocate new buffer
         let element_count = source_view.element_count();
-        let new_buffer_id = self.next_buffer_id;
-        self.next_buffer_id += 1;
+        let new_buffer_id = crate::buffer::fresh_buffer_id()?;
 
-        let new_buffer = Buffer::allocate(new_buffer_id, element_count).map_err(|_| {
+        let mut new_buffer = Buffer::allocate(new_buffer_id, element_count).map_err(|_| {
             HardwareError::AllocationFailed {
-                size: element_count * std::mem::size_of::<f32>(),
+                size: element_count.saturating_mul(std::mem::size_of::<f32>()),
             }
         })?;
 
         // Step 3: Copy strided data to new contiguous buffer
         // For each index in the source, copy to linear index in new buffer
-        self.copy_strided_to_linear(source_view, source_buffer, &new_buffer)?;
+        self.copy_strided_to_linear(source_view, source_buffer, &mut new_buffer)?;
 
         // Step 4: Create new view with canonical strides
         let canonical_strides = {
@@ -115,69 +119,26 @@ impl MaterializationBarrier {
         &self,
         source_view: &TensorView,
         source_buffer: &Buffer,
-        dest_buffer: &Buffer,
+        dest_buffer: &mut Buffer,
     ) -> Result<()> {
-        let mut linear_idx = 0;
-
-        // Iterate through all indices in source tensor
-        self.iterate_indices(&source_view.shape, |indices| {
-            // Calculate source address
-            let source_addr = {
-                let mut addr = source_view.offset;
-                for (i, &idx) in indices.iter().enumerate() {
-                    addr = addr.saturating_add(idx.saturating_mul(source_view.strides[i]));
-                }
-                addr
-            };
-
-            if source_addr < source_buffer.capacity() && linear_idx < dest_buffer.capacity() {
-                let value = source_buffer.get_unchecked(source_addr);
-                dest_buffer.set_unchecked(linear_idx, value);
+        let count = crate::memory::checked_element_count(&source_view.shape)?;
+        for linear in 0..count {
+            let mut remaining = linear;
+            let mut indices = vec![0; source_view.shape.len()];
+            for dim in (0..indices.len()).rev() {
+                indices[dim] = remaining % source_view.shape[dim];
+                remaining /= source_view.shape[dim];
             }
-
-            linear_idx += 1;
-        });
-
+            let address = source_view.address_for(&indices)?;
+            if address >= source_buffer.capacity() {
+                return Err(HardwareError::AddressOutOfBounds {
+                    address,
+                    capacity: source_buffer.capacity(),
+                });
+            }
+            dest_buffer.set(linear, source_buffer.get_unchecked(address))?;
+        }
         Ok(())
-    }
-
-    /// Iterate through all multi-dimensional indices for a shape
-    fn iterate_indices<F>(&self, shape: &[usize], mut callback: F)
-    where
-        F: FnMut(Vec<usize>),
-    {
-        if shape.is_empty() {
-            callback(vec![]);
-            return;
-        }
-
-        let mut indices = vec![0; shape.len()];
-        loop {
-            callback(indices.clone());
-
-            // Increment indices
-            let mut carry = 1;
-            for i in (0..shape.len()).rev() {
-                if carry == 0 {
-                    break;
-                }
-                indices[i] += 1;
-                if indices[i] >= shape[i] {
-                    indices[i] = 0;
-                } else {
-                    carry = 0;
-                }
-            }
-
-            if carry != 0 {
-                break; // Overflow, done iterating
-            }
-        }
-    }
-
-    /// Get current next buffer ID (for testing)
-    pub fn next_id(&self) -> u64 {
-        self.next_buffer_id
     }
 }
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later OR Apache-2.0
+// Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
+// CLONE_GATE: sparse-router-formal::rust::tensor-hw::src::governance.rs
 //! Governance state engine with validation gates
 //!
 //! Enforces invariants:
@@ -34,11 +37,15 @@ impl GovernanceValidator {
 
         // Check buffer identity and generation
         view.buffer_handle.validate(buffer)?;
+        view.validate_metadata()?;
+        crate::memory::MemoryLayout::new(
+            buffer.capacity(),
+            view.offset,
+            view.shape.clone(),
+            view.strides.clone(),
+        )?;
 
         // Check buffer mutability constraints
-        if view.ownership.can_mutate_directly() {
-            buffer.check_mutable()?;
-        }
 
         // Check offset is reasonable
         if view.offset >= buffer.capacity() {
@@ -111,6 +118,9 @@ impl GovernanceValidator {
         if is_write && !view.ownership.can_mutate_directly() {
             return Err(HardwareError::SharedTensorMutation);
         }
+        if is_write {
+            buffer.check_mutable()?;
+        }
 
         Ok(())
     }
@@ -165,11 +175,7 @@ impl GovernanceValidator {
     /// **Checks**:
     /// - Permutation is valid reordering
     /// - All dimensions present
-    pub fn validate_transpose(
-        &mut self,
-        view: &TensorView,
-        permutation: &[usize],
-    ) -> Result<()> {
+    pub fn validate_transpose(&mut self, view: &TensorView, permutation: &[usize]) -> Result<()> {
         self.op_sequence = self.op_sequence.saturating_add(1);
 
         if permutation.len() != view.shape.len() {
@@ -202,11 +208,7 @@ impl GovernanceValidator {
     /// **Checks**:
     /// - New shape has same element count
     /// - Tensor is canonical (no non-canonical reshape)
-    pub fn validate_reshape(
-        &mut self,
-        view: &TensorView,
-        new_shape: &[usize],
-    ) -> Result<()> {
+    pub fn validate_reshape(&mut self, view: &TensorView, new_shape: &[usize]) -> Result<()> {
         self.op_sequence = self.op_sequence.saturating_add(1);
 
         if !view.ownership.is_canonical {
@@ -320,7 +322,9 @@ mod tests {
         let buf = create_test_buffer();
         let view = create_test_view(&buf);
 
-        assert!(validator.validate_access(&view, &buf, &[2, 3], false).is_ok());
+        assert!(validator
+            .validate_access(&view, &buf, &[2, 3], false)
+            .is_ok());
     }
 
     #[test]
@@ -329,7 +333,9 @@ mod tests {
         let buf = create_test_buffer();
         let view = create_test_view(&buf);
 
-        assert!(validator.validate_access(&view, &buf, &[2, 3], true).is_ok());
+        assert!(validator
+            .validate_access(&view, &buf, &[2, 3], true)
+            .is_ok());
     }
 
     #[test]
@@ -339,7 +345,9 @@ mod tests {
         let mut view = create_test_view(&buf);
         view.ownership = view.ownership.transition_to_shared().unwrap();
 
-        assert!(validator.validate_access(&view, &buf, &[2, 3], true).is_err());
+        assert!(validator
+            .validate_access(&view, &buf, &[2, 3], true)
+            .is_err());
     }
 
     #[test]
@@ -348,7 +356,9 @@ mod tests {
         let buf = create_test_buffer();
         let view = create_test_view(&buf);
 
-        assert!(validator.validate_slice(&view, &[(2, 5, 1), (3, 7, 1)]).is_ok());
+        assert!(validator
+            .validate_slice(&view, &[(2, 5, 1), (3, 7, 1)])
+            .is_ok());
     }
 
     #[test]
@@ -357,7 +367,9 @@ mod tests {
         let buf = create_test_buffer();
         let view = create_test_view(&buf);
 
-        assert!(validator.validate_slice(&view, &[(2, 5, 0), (3, 7, 1)]).is_err());
+        assert!(validator
+            .validate_slice(&view, &[(2, 5, 0), (3, 7, 1)])
+            .is_err());
     }
 
     #[test]

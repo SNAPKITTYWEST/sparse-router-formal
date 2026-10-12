@@ -1,6 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later OR Apache-2.0
+// Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
+// CLONE_GATE: sparse-router-formal::rust::tensor-hw::src::view.rs
 //! Tensor views and slicing operations (zero-copy)
 //!
-//! Views share underlying buffer via Arc, never copy data.
+//! Views hold checked buffer descriptors; callers retain the associated Buffer.
 //! Slicing creates new semantic shape/strides without modifying source.
 
 use crate::buffer::{Buffer, BufferHandle};
@@ -28,18 +31,40 @@ pub struct TensorView {
 }
 
 impl TensorView {
+    pub(crate) fn validate_metadata(&self) -> Result<()> {
+        crate::memory::checked_element_count(&self.shape)?;
+        if self.strides.len() != self.shape.len() {
+            return Err(HardwareError::RankMismatch {
+                expected: self.shape.len(),
+                actual: self.strides.len(),
+            });
+        }
+        if self.ownership.is_canonical
+            != crate::memory::has_canonical_strides(&self.shape, &self.strides)
+        {
+            return Err(HardwareError::GovernanceViolation {
+                reason: "Layout flag does not match strides",
+            });
+        }
+        Ok(())
+    }
     /// Create a view from buffer and layout
     pub fn from_buffer(buffer: &Buffer, layout: MemoryLayout) -> Self {
+        let ownership = OwnershipToken {
+            is_owner: buffer.is_exclusive(),
+            is_canonical: layout.is_canonical_strides(),
+            ..OwnershipToken::new_exclusive()
+        };
         TensorView {
             buffer_handle: BufferHandle::from_buffer(buffer),
             shape: layout.shape,
             strides: layout.strides,
             offset: layout.offset,
-            ownership: OwnershipToken::new_exclusive(),
+            ownership,
         }
     }
 
-    /// Create a shared view (Arc::clone)
+    /// Create a shared descriptor without copying tensor data.
     ///
     /// **Governance**: B_own: 1 → 0, data NOT copied
     pub fn share(&self) -> Result<Self> {
@@ -66,6 +91,7 @@ impl TensorView {
     ///
     /// **Invariant**: Source buffer remains valid and unchanged
     pub fn slice(&self, ranges: &[(usize, usize, usize)]) -> Result<Self> {
+        self.validate_metadata()?;
         if ranges.len() != self.shape.len() {
             return Err(HardwareError::RankMismatch {
                 expected: self.shape.len(),
@@ -79,7 +105,7 @@ impl TensorView {
 
         for (dim, &(start, end, step)) in ranges.iter().enumerate() {
             // Bounds check
-            if start > end || end > self.shape[dim] || step == 0 {
+            if start >= end || end > self.shape[dim] || step == 0 {
                 return Err(HardwareError::IndexOutOfBounds {
                     index: start,
                     size: self.shape[dim],
@@ -87,7 +113,7 @@ impl TensorView {
             }
 
             let new_size = if end > start {
-                (end - start + step - 1) / step
+                (end - start).div_ceil(step)
             } else {
                 0
             };
@@ -100,7 +126,8 @@ impl TensorView {
             new_strides.push(self.strides[dim].saturating_mul(step));
         }
 
-        let new_ownership = self.ownership.transition_to_shared()?;
+        let mut new_ownership = self.ownership.transition_to_shared()?;
+        new_ownership.is_canonical = crate::memory::has_canonical_strides(&new_shape, &new_strides);
 
         Ok(TensorView {
             buffer_handle: self.buffer_handle,
@@ -116,6 +143,7 @@ impl TensorView {
     /// **Input**: permutation = new ordering of dimension indices
     /// **Example**: [2, 0, 1] for 3D tensor means new_shape[0] = old_shape[2]
     pub fn transpose(&self, permutation: &[usize]) -> Result<Self> {
+        self.validate_metadata()?;
         if permutation.len() != self.shape.len() {
             return Err(HardwareError::RankMismatch {
                 expected: self.shape.len(),
@@ -144,7 +172,8 @@ impl TensorView {
         }
 
         // Transposition makes strides non-canonical
-        let new_ownership = self.ownership.transition_to_non_canonical()?;
+        let mut new_ownership = self.ownership.transition_to_non_canonical()?;
+        new_ownership.is_canonical = crate::memory::has_canonical_strides(&new_shape, &new_strides);
 
         Ok(TensorView {
             buffer_handle: self.buffer_handle,
@@ -160,11 +189,12 @@ impl TensorView {
     /// **Precondition**: element_count must match
     /// **Note**: May require materialization if strides are non-canonical
     pub fn reshape(&self, new_shape: Vec<usize>) -> Result<Self> {
+        self.validate_metadata()?;
         if new_shape.is_empty() {
             return Err(HardwareError::ZeroElementShape);
         }
 
-        let new_element_count: usize = new_shape.iter().product();
+        let new_element_count = crate::memory::checked_element_count(&new_shape)?;
         if new_element_count != self.element_count() {
             return Err(HardwareError::ViewCreationFailed {
                 reason: "Reshape: element count mismatch",
@@ -198,11 +228,14 @@ impl TensorView {
     /// Get total number of elements
     #[inline]
     pub fn element_count(&self) -> usize {
-        self.shape.iter().product()
+        self.shape
+            .iter()
+            .fold(1usize, |n, &dim| n.saturating_mul(dim))
     }
 
     /// Calculate address for multi-dimensional index
     pub fn address_for(&self, indices: &[usize]) -> Result<usize> {
+        self.validate_metadata()?;
         if indices.len() != self.shape.len() {
             return Err(HardwareError::RankMismatch {
                 expected: self.shape.len(),
@@ -223,7 +256,12 @@ impl TensorView {
         // Calculate strided address
         let mut addr = self.offset;
         for (i, &idx) in indices.iter().enumerate() {
-            addr = addr.saturating_add(idx.saturating_mul(self.strides[i]));
+            addr = idx
+                .checked_mul(self.strides[i])
+                .and_then(|delta| addr.checked_add(delta))
+                .ok_or(HardwareError::GovernanceViolation {
+                    reason: "Address overflow",
+                })?;
         }
 
         Ok(addr)

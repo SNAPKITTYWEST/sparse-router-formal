@@ -1,30 +1,17 @@
 -- SPDX-License-Identifier: GPL-3.0-or-later OR Apache-2.0
 -- Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
 -- CLONE_GATE: sparse-router-formal::formal::convergence
---
--- Novel convergence proof: region ownership stabilizes.
---
--- Method: define a potential function Φ over the router state equal to
--- the number of region-ownership transitions remaining before fixpoint.
--- Show that each raw_route call either:
---   (a) hits the owner fast path (Φ unchanged), or
---   (b) assigns ownership (Φ decreases by 1, bounded below by 0).
--- Since Φ ∈ ℕ and is non-increasing, the system converges in at most
--- MaxRegions steps to a stable ownership assignment.
-
+-- The decision model does not update state or establish scheduler liveness.
 import SparseRouter.Types
 import SparseRouter.Route
 import SparseRouter.Invariants
 
 namespace SparseRouter.Convergence
-
 open SparseRouter SparseRouter.Route
 
 def unownedRegions (state : RouterState) : Nat :=
   (List.range MaxRegions).countP fun i =>
-    if h : i < MaxRegions then
-      (state.regionTable ⟨i, h⟩).owner = none
-    else false
+    if h : i < MaxRegions then (state.regionTable ⟨i, h⟩).owner = none else false
 
 def potential (state : RouterState) : Nat := unownedRegions state
 
@@ -47,21 +34,14 @@ theorem sparse_edge_assigns_owner (state : RouterState) (t : Task)
 theorem potential_bounded : ∀ state : RouterState,
     potential state ≤ MaxRegions := by
   intro state
-  simp [potential, unownedRegions]
-  exact List.countP_le_length _
+  unfold potential unownedRegions
+  exact Nat.le_trans List.countP_le_length (by simp)
 
-theorem convergence_in_finite_steps :
-    ∀ state : RouterState,
-    potential state = 0 →
+theorem zero_potential_all_regions_owned :
+    ∀ state : RouterState, potential state = 0 →
     ∀ r : Fin MaxRegions, (state.regionTable r).owner ≠ none := by
   intro state hpot r
   simp [potential, unownedRegions] at hpot
-  by_contra h
-  push_neg at h
-  have : (List.range MaxRegions).countP (fun i =>
-    if h : i < MaxRegions then (state.regionTable ⟨i, h⟩).owner = none else false) > 0 := by
-    apply List.countP_pos.mpr
-    exact ⟨r.val, List.mem_range.mpr r.isLt, by simp [r.isLt, h]⟩
-  omega
+  exact hpot r.val r.isLt r.isLt
 
 end SparseRouter.Convergence
