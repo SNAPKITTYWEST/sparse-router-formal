@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later OR Apache-2.0
+// Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
+// CLONE_GATE: sparse-router-formal::tests::conformance::mod.rs
 //! Cross-Language Conformance Test Suite
 //!
 //! Comprehensive test coverage for Rust and Pascal tensor implementations.

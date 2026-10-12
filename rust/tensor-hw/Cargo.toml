@@ -1,8 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later OR Apache-2.0
+# Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
+# CLONE_GATE: sparse-router-formal::rust::tensor-hw::Cargo.toml
 [package]
 name = "tensor-hw"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.70"
+publish = false
+repository = "https://github.com/SNAPKITTYWEST/sparse-router-formal"
+rust-version = "1.85"
 description = "Hardware implementation layer for NraayTensor with explicit state transitions and generation-based safety"
 license = "GPL-3.0-or-later OR Apache-2.0"
 
@@ -10,22 +15,10 @@ license = "GPL-3.0-or-later OR Apache-2.0"
 name = "tensor_hw"
 path = "src/lib.rs"
 
-[[bin]]
-name = "tensor-hw-abi"
-path = "src/bin/ffi_entry.rs"
-required-features = ["ffi"]
-
 [dependencies]
 thiserror = "1.0"
-atomic = "0.1"
-parking_lot = "0.12"
-
-[dev-dependencies]
-criterion = "0.5"
-
 [features]
 default = ["std"]
 std = []
-ffi = ["std"]
-no_std = []
+# The legacy FFI sources are not part of the validated library surface.
 

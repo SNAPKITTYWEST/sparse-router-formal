@@ -31,7 +31,8 @@ def DequeCapacityRespected (state : RouterState) : Prop :=
     (state.workers i).deque.count ≤ DequeCapacity
 
 def TaskCountConserved (state : RouterState) (totalTasks : Nat) : Prop :=
-  (Finset.univ.sum fun i : Fin MaxWorkers => (state.workers i).deque.count) = totalTasks
+  ((List.range MaxWorkers).foldl (fun total i =>
+    if h : i < MaxWorkers then total + (state.workers ⟨i, h⟩).deque.count else total) 0) = totalTasks
 
 structure WellFormedRouter (state : RouterState) : Prop where
   owner_valid : RegionOwnerValid state
@@ -41,7 +42,8 @@ structure WellFormedRouter (state : RouterState) : Prop where
 
 theorem route_preserves_uniqueness (state : RouterState) (t : Task)
     (hw : state.numWorkers > 0) :
-    ∃! w : WorkerId, routeDecisionWorker (rawRoute state t hw) = w := by
+    ∃ w : WorkerId, routeDecisionWorker (rawRoute state t hw) = w ∧
+      ∀ w' : WorkerId, routeDecisionWorker (rawRoute state t hw) = w' → w' = w := by
   exact ⟨_, rfl, fun _ h => h.symm⟩
 
 theorem sparse_traversal_bounded (edges : SparseEdgeSet) :

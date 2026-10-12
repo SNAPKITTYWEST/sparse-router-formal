@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later OR Apache-2.0
+// Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
+// CLONE_GATE: sparse-router-formal::rust::tensor-hw::src::buffer.rs
 //! Buffer management with generation counters and reference tracking
 //!
 //! Each buffer has:
@@ -7,7 +10,17 @@
 //! - Reference count for exclusivity checking
 
 use crate::error::{HardwareError, Result};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+static NEXT_BUFFER_ID: AtomicU64 = AtomicU64::new(1);
+pub(crate) fn fresh_buffer_id() -> Result<BufferId> {
+    NEXT_BUFFER_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .map_err(|_| HardwareError::GovernanceViolation {
+            reason: "Buffer identifiers exhausted",
+        })
+}
 
 /// Unique 64-bit buffer identifier
 pub type BufferId = u64;
@@ -16,10 +29,10 @@ pub type BufferId = u64;
 pub type Generation = u64;
 
 /// Hardware buffer with generation tracking
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Buffer {
     /// Physical storage (shared ownership)
-    pub data: Arc<Vec<f32>>,
+    data: Arc<Vec<f32>>,
 
     /// Current generation counter
     pub generation: Generation,
@@ -40,7 +53,15 @@ impl Buffer {
             return Err(HardwareError::ZeroElementShape);
         }
 
-        let data = Arc::new(vec![0.0; size]);
+        let bytes = size
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or(HardwareError::AllocationFailed { size })?;
+        let mut storage = Vec::new();
+        storage
+            .try_reserve_exact(size)
+            .map_err(|_| HardwareError::AllocationFailed { size: bytes })?;
+        storage.resize(size, 0.0);
+        let data = Arc::new(storage);
 
         Ok(Buffer {
             data,
@@ -117,17 +138,20 @@ impl Buffer {
         self.data[index]
     }
 
-    /// Direct element write (unchecked - use with bounds/mutability validation)
+    /// Checked element write requiring exclusive mutable storage.
     #[inline]
-    pub fn set_unchecked(&self, index: usize, value: f32) {
-        // SAFETY: We use unsafe to bypass Arc immutability for exclusive buffers
-        // The caller must ensure:
-        // 1. is_exclusive() is true
-        // 2. index is in bounds
-        unsafe {
-            let ptr = self.data.as_ptr() as *mut f32;
-            *ptr.add(index) = value;
-        }
+    pub fn set(&mut self, index: usize, value: f32) -> Result<()> {
+        self.check_mutable()?;
+        let capacity = self.capacity();
+        let data = Arc::get_mut(&mut self.data).ok_or(HardwareError::SharedTensorMutation)?;
+        let slot = data
+            .get_mut(index)
+            .ok_or(HardwareError::AddressOutOfBounds {
+                address: index,
+                capacity,
+            })?;
+        *slot = value;
+        Ok(())
     }
 }
 

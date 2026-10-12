@@ -30,15 +30,15 @@ def migrationCost (w : Worker) (t : Task) : Int :=
   else (t.footprintBytes : Int) / (1024 * 64)
 
 def computeScore (w : Worker) (t : Task) : Int :=
-  locality w t + memoryAffinity w t + queuePressure w t +
-  stealability w t - migrationCost w t
+  locality w t + memoryAffinity w t + queuePressure w +
+  stealability w - migrationCost w t
 
 theorem score_locality_bonus (w : Worker) (t : Task)
     (h : w.lastRegion = t.memoryRegion.val) :
     locality w t = 100 := by
   simp [locality, h]
 
-theorem score_empty_queue_bonus (w : Worker) (t : Task)
+theorem score_empty_queue_bonus (w : Worker)
     (h : w.deque.count = 0) :
     queuePressure w = 80 := by
   simp [queuePressure, h]

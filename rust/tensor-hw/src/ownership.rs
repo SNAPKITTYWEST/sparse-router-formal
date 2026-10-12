@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later OR Apache-2.0
+// Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
+// CLONE_GATE: sparse-router-formal::rust::tensor-hw::src::ownership.rs
 //! Ownership token state machine with explicit transitions
 //!
 //! Tracks the semantic governance state B = (B_layout, B_own):
@@ -207,7 +210,7 @@ mod tests {
 
     #[test]
     fn test_ownership_state_validation() {
-        let mut state = OwnershipState::new(1);
+        let state = OwnershipState::new(1);
         assert!(state.validate(1).is_ok());
         assert!(state.validate(2).is_err());
     }

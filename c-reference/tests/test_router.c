@@ -5,6 +5,9 @@
 
 #include <stdio.h>
 #include <string.h>
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
 #include "../router.h"
 
@@ -114,6 +117,57 @@ TEST(test_steal) {
     assert(state.workers[1].steal_count == 1);
 }
 
+TEST(test_invalid_inputs) {
+    setup(2, 2, 1);
+    task_t t = { .memory_region = MAX_REGIONS };
+    assert(raw_route(&state, &t) == WORKER_NONE);
+    t.memory_region = 0;
+    assert(raw_route(NULL, &t) == WORKER_NONE);
+    assert(raw_route(&state, NULL) == WORKER_NONE);
+    state.num_workers = 0;
+    assert(raw_route(&state, &t) == WORKER_NONE);
+    state.num_workers = MAX_WORKERS + 1;
+    assert(raw_route(&state, &t) == WORKER_NONE);
+    state.num_workers = 2;
+    state.sparse_edges[0].count = MAX_SPARSE_EDGES + 1;
+    assert(raw_route(&state, &t) == WORKER_NONE);
+    state.sparse_edges[0].count = 1;
+    state.sparse_edges[0].workers[0] = 2;
+    assert(raw_route(&state, &t) == WORKER_NONE);
+    state.sparse_edges[0].workers[0] = 0;
+    state.region_table[0].has_owner = true;
+    state.region_table[0].owner = 2;
+    assert(raw_route(&state, &t) == WORKER_NONE);
+    assert(!recursive_steal(&state, 2));
+    assert(state.workers[0].deque.count == 0);
+}
+
+TEST(test_backpressure_and_owner_overflow) {
+    setup(2, 2, 1);
+    task_t t = { .memory_region = 0, .task_id = 99 };
+    state.region_table[0].has_owner = true;
+    state.region_table[0].owner = 0;
+    state.workers[0].deque.count = DEQUE_CAPACITY;
+    assert(raw_route(&state, &t) == 1);
+    assert(state.workers[1].deque.tasks[0].task_id == 99);
+    assert(state.workers[0].deque.count == DEQUE_CAPACITY);
+    state.workers[1].deque.count = DEQUE_CAPACITY;
+    uint64_t accesses = state.region_table[0].access_count;
+    assert(raw_route(&state, &t) == WORKER_NONE);
+    assert(state.region_table[0].access_count == accesses);
+}
+
+TEST(test_conservation_under_exhaustion) {
+    setup(2, 2, 2);
+    uint32_t accepted = 0;
+    for (uint32_t i = 0; i < DEQUE_CAPACITY * 3; i++) {
+        task_t t = { .memory_region = i % 2, .task_id = i };
+        if (raw_route(&state, &t) != WORKER_NONE) accepted++;
+    }
+    assert(accepted == DEQUE_CAPACITY * 2);
+    assert(state.workers[0].deque.count + state.workers[1].deque.count == accepted);
+}
+
 int main(void) {
     printf("=== Sparse Router Tests ===\n");
     RUN(test_owner_fast_path);
@@ -123,6 +177,9 @@ int main(void) {
     RUN(test_convergence);
     RUN(test_deque_push_pop);
     RUN(test_steal);
+    RUN(test_invalid_inputs);
+    RUN(test_backpressure_and_owner_overflow);
+    RUN(test_conservation_under_exhaustion);
     printf("\nAll tests passed.\n");
     return 0;
 }

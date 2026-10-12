@@ -3,9 +3,9 @@
 # CLONE_GATE: sparse-router-formal::makefile
 
 CC      := gcc
-CFLAGS  := -O2 -Wall -Wextra -Wpedantic -std=c11
+CFLAGS  := -O2 -Wall -Wextra -Wpedantic -Werror -std=c11 -UNDEBUG
 
-.PHONY: all test bench verify clone-gate-check clean
+.PHONY: all test bench test-rust verify clone-gate-check clean check
 
 all: build/router build/test_router
 
@@ -13,7 +13,7 @@ build/router: c-reference/main.c c-reference/router.h c-reference/types.h c-refe
 	@mkdir -p build
 	$(CC) $(CFLAGS) -I c-reference -o $@ c-reference/main.c
 
-build/test_router: c-reference/tests/test_router.c c-reference/router.h
+build/test_router: c-reference/tests/test_router.c c-reference/router.h c-reference/types.h c-reference/scoring.h c-reference/deque.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -I c-reference -o $@ c-reference/tests/test_router.c
 
@@ -24,13 +24,17 @@ bench: build/router
 	./build/router
 
 test-rust:
-	cd rust/tensor-hw && cargo test
+	cd rust/tensor-hw && cargo test --locked --all-targets --all-features
 
 verify:
 	cd formal && lake build
 
 clone-gate-check:
 	@bash scripts/clone_gate_verify.sh
+	@python3 scripts/check_headers.py
+
+check: test test-rust verify clone-gate-check
+	@python3 scripts/check_proofs.py
 
 clean:
 	rm -rf build/

@@ -1,10 +1,16 @@
+// SPDX-License-Identifier: GPL-3.0-or-later OR Apache-2.0
+// Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
+// CLONE_GATE: sparse-router-formal::rust::tensor-hw::src::routing.rs
 //! Sparse work-stealing with memory locality heuristic
 //!
 //! RAW_ROUTE algorithm: Region-aware work-stealing scheduler
 //! Balances locality (35%), memory affinity (20%), queue pressure (25%),
 //! stealability (10%), and migration cost (-10%).
 
+use crate::error::{HardwareError, Result};
 use std::collections::HashMap;
+
+pub const MAX_SPARSE_EDGES: usize = 16;
 
 /// Memory region identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -47,6 +53,7 @@ pub struct SparseRouter {
 
     /// Worker topology and state
     workers: HashMap<WorkerId, WorkerState>,
+    sparse_edges: HashMap<RegionId, Vec<WorkerId>>,
 
     /// Routing statistics
     total_routes: u64,
@@ -57,12 +64,18 @@ impl SparseRouter {
         SparseRouter {
             region_table: HashMap::new(),
             workers: HashMap::new(),
+            sparse_edges: HashMap::new(),
             total_routes: 0,
         }
     }
 
     /// Register a worker in topology
-    pub fn register_worker(&mut self, id: WorkerId, locality_distance: f32) {
+    pub fn register_worker(&mut self, id: WorkerId, locality_distance: f32) -> Result<()> {
+        if !locality_distance.is_finite() || locality_distance < 0.0 {
+            return Err(HardwareError::GovernanceViolation {
+                reason: "Locality distance must be finite and nonnegative",
+            });
+        }
         let worker = WorkerState {
             id,
             queue_depth: 0,
@@ -71,6 +84,27 @@ impl SparseRouter {
             stealability: 1.0,
         };
         self.workers.insert(id, worker);
+        Ok(())
+    }
+
+    /// Configure a bounded region topology. Duplicate or unknown workers are rejected.
+    pub fn set_region_candidates(
+        &mut self,
+        region: RegionId,
+        candidates: Vec<WorkerId>,
+    ) -> Result<()> {
+        if candidates.len() > MAX_SPARSE_EDGES
+            || candidates
+                .iter()
+                .enumerate()
+                .any(|(i, id)| !self.workers.contains_key(id) || candidates[..i].contains(id))
+        {
+            return Err(HardwareError::GovernanceViolation {
+                reason: "Invalid sparse topology",
+            });
+        }
+        self.sparse_edges.insert(region, candidates);
+        Ok(())
     }
 
     /// Update worker queue depth
@@ -92,19 +126,24 @@ impl SparseRouter {
     ///    - migration_cost: -10%
     /// 3. Pick highest scoring worker
     /// 4. If no topology, select least-loaded
-    pub fn route(&mut self, task: &Task) -> WorkerId {
-        self.total_routes += 1;
+    pub fn route(&mut self, task: &Task) -> Result<WorkerId> {
+        if self.workers.is_empty() {
+            return Err(HardwareError::GovernanceViolation {
+                reason: "No registered workers",
+            });
+        }
+        self.total_routes = self.total_routes.saturating_add(1);
 
         // Step 1: Check region ownership
         let entry = self.region_table.entry(task.region).or_insert(RegionEntry {
             owner: None,
             access_count: 0,
         });
-        entry.access_count += 1;
+        entry.access_count = entry.access_count.saturating_add(1);
 
         if let Some(owner) = entry.owner {
             if self.workers.contains_key(&owner) {
-                return owner;
+                return Ok(owner);
             }
         }
 
@@ -112,10 +151,17 @@ impl SparseRouter {
         let mut best_worker = None;
         let mut best_score = f32::NEG_INFINITY;
 
-        for (_, worker) in &self.workers {
+        let candidates = self.sparse_edges.get(&task.region);
+        let candidate_workers: Box<dyn Iterator<Item = &WorkerState> + '_> = match candidates {
+            Some(ids) => Box::new(ids.iter().filter_map(|id| self.workers.get(id))),
+            None => Box::new(self.workers.values()),
+        };
+        for worker in candidate_workers {
             let score = self.score_worker(worker, task);
 
-            if score > best_score {
+            if score > best_score
+                || (score == best_score && best_worker.is_none_or(|id| worker.id < id))
+            {
                 best_score = score;
                 best_worker = Some(worker.id);
             }
@@ -129,7 +175,7 @@ impl SparseRouter {
             entry.owner = Some(selected);
         }
 
-        selected
+        Ok(selected)
     }
 
     /// Score a candidate worker for task
@@ -170,7 +216,7 @@ impl SparseRouter {
     fn select_least_loaded(&self) -> WorkerId {
         self.workers
             .values()
-            .min_by_key(|w| w.queue_depth)
+            .min_by_key(|w| (w.queue_depth, w.id))
             .map(|w| w.id)
             .unwrap_or(WorkerId(0))
     }
@@ -182,9 +228,7 @@ impl SparseRouter {
 
     /// Clear region ownership (for load balancing)
     pub fn clear_region(&mut self, region: RegionId) {
-        if let Some(entry) = self.region_table.get_mut(&region) {
-            entry.owner = None;
-        }
+        self.region_table.remove(&region);
     }
 
     /// Get routing statistics
@@ -212,16 +256,16 @@ mod tests {
     #[test]
     fn test_register_worker() {
         let mut router = SparseRouter::new();
-        router.register_worker(WorkerId(0), 0.5);
-        router.register_worker(WorkerId(1), 1.5);
+        router.register_worker(WorkerId(0), 0.5).unwrap();
+        router.register_worker(WorkerId(1), 1.5).unwrap();
         assert_eq!(router.workers.len(), 2);
     }
 
     #[test]
     fn test_route_to_region_owner() {
         let mut router = SparseRouter::new();
-        router.register_worker(WorkerId(0), 0.5);
-        router.register_worker(WorkerId(1), 1.5);
+        router.register_worker(WorkerId(0), 0.5).unwrap();
+        router.register_worker(WorkerId(1), 1.5).unwrap();
 
         let task1 = Task {
             id: 1,
@@ -235,8 +279,8 @@ mod tests {
             size: 100,
         };
 
-        let w1 = router.route(&task1);
-        let w2 = router.route(&task2);
+        let w1 = router.route(&task1).unwrap();
+        let w2 = router.route(&task2).unwrap();
 
         // Both tasks in same region should go to same worker
         assert_eq!(w1, w2);
@@ -260,13 +304,13 @@ mod tests {
         };
 
         let score = router.score_worker(&worker, &task);
-        assert!(score >= -1.0 && score <= 1.0);
+        assert!((-1.0..=1.0).contains(&score));
     }
 
     #[test]
     fn test_clear_region() {
         let mut router = SparseRouter::new();
-        router.register_worker(WorkerId(0), 0.5);
+        router.register_worker(WorkerId(0), 0.5).unwrap();
 
         let task = Task {
             id: 1,
@@ -274,7 +318,7 @@ mod tests {
             size: 100,
         };
 
-        let _ = router.route(&task);
+        let _ = router.route(&task).unwrap();
         assert!(router.region_owner(RegionId(1)).is_some());
 
         router.clear_region(RegionId(1));
@@ -284,8 +328,8 @@ mod tests {
     #[test]
     fn test_least_loaded_selection() {
         let mut router = SparseRouter::new();
-        router.register_worker(WorkerId(0), 0.5);
-        router.register_worker(WorkerId(1), 1.5);
+        router.register_worker(WorkerId(0), 0.5).unwrap();
+        router.register_worker(WorkerId(1), 1.5).unwrap();
 
         router.set_queue_depth(WorkerId(0), 10);
         router.set_queue_depth(WorkerId(1), 100);
@@ -296,7 +340,7 @@ mod tests {
             size: 100,
         };
 
-        let selected = router.route(&task);
+        let selected = router.route(&task).unwrap();
         // First task should go to least-loaded (0) or whoever scores best
         assert!(selected == WorkerId(0) || selected == WorkerId(1));
     }
@@ -304,7 +348,7 @@ mod tests {
     #[test]
     fn test_stats() {
         let mut router = SparseRouter::new();
-        router.register_worker(WorkerId(0), 0.5);
+        router.register_worker(WorkerId(0), 0.5).unwrap();
 
         let task1 = Task {
             id: 1,
@@ -317,8 +361,8 @@ mod tests {
             size: 100,
         };
 
-        router.route(&task1);
-        router.route(&task2);
+        router.route(&task1).unwrap();
+        router.route(&task2).unwrap();
 
         let (routes, regions) = router.stats();
         assert_eq!(routes, 2);

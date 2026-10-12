@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later OR Apache-2.0
+// Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
+// CLONE_GATE: sparse-router-formal::rust::tensor-hw::src::descriptor.rs
 //! Hardware-safe tensor descriptor with #[repr(C)] for FFI
 //!
 //! Canonical binary layout for cross-language compatibility (Pascal, C, Rust)
@@ -76,6 +79,8 @@ pub struct TensorDescriptor {
 
 impl TensorDescriptor {
     /// Create descriptor from components
+    // Descriptor fields follow the existing C-shaped record constructor.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         buffer_id: BufferId,
         offset: u64,

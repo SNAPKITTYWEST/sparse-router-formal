@@ -11,18 +11,19 @@ open SparseRouter
 def push (d : WorkDeque) (t : Task) (h : d.count < DequeCapacity) : WorkDeque :=
   { tasks := d.tasks ++ [t]
     count := d.count + 1
-    inv_count := by simp [List.length_append]; omega
+    inv_count := by simpa using d.inv_count
     inv_cap := by omega }
 
 def pop (d : WorkDeque) (h : d.count > 0) : Task × WorkDeque :=
-  let last := d.tasks.getLast (by intro hempty; simp [hempty] at h; exact absurd d.inv_count (by omega))
+  let last := d.tasks.getLast (by intro hempty; have hc := d.inv_count; simp [hempty] at hc; omega)
   let rest := d.tasks.dropLast
   (last,
    { tasks := rest
      count := d.count - 1
      inv_count := by
-       simp [List.length_dropLast, d.inv_count]; omega
-     inv_cap := by omega })
+       change d.count - 1 = d.tasks.dropLast.length
+       rw [List.length_dropLast, ← d.inv_count]
+     inv_cap := Nat.le_trans (Nat.sub_le _ _) d.inv_cap })
 
 theorem push_increases_count (d : WorkDeque) (t : Task) (h : d.count < DequeCapacity) :
     (push d t h).count = d.count + 1 := by
@@ -35,7 +36,7 @@ theorem pop_decreases_count (d : WorkDeque) (h : d.count > 0) :
 theorem push_pop_identity (d : WorkDeque) (t : Task)
     (hcap : d.count < DequeCapacity) :
     let d' := push d t hcap
-    let hpos : d'.count > 0 := by simp [push]; omega
+    let hpos : d'.count > 0 := by change d.count + 1 > 0; omega
     (pop d' hpos).1 = t := by
   simp [push, pop, List.getLast_append]
 

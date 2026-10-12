@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later OR Apache-2.0
+// Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
+// CLONE_GATE: sparse-router-formal::rust::tensor-hw::src::lib.rs
 //! # Tensor Hardware Implementation Layer
 //!
 //! NraayTensor hardware layer with explicit state transitions, generation-based safety,
@@ -54,8 +57,8 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 pub mod buffer;
-pub mod error;
 pub mod descriptor;
+pub mod error;
 pub mod governance;
 pub mod materialize;
 pub mod memory;
@@ -64,13 +67,13 @@ pub mod routing;
 pub mod view;
 
 pub use buffer::{Buffer, BufferHandle, BufferId};
-pub use error::{HardwareError, Result};
 pub use descriptor::TensorDescriptor;
+pub use error::{HardwareError, Result};
 pub use governance::GovernanceValidator;
 pub use materialize::{MaterializationBarrier, MaterializationResult};
 pub use memory::MemoryLayout;
 pub use ownership::{OwnershipState, OwnershipToken};
-pub use routing::{SparseRouter, Task, RegionId, WorkerId};
+pub use routing::{RegionId, SparseRouter, Task, WorkerId};
 pub use view::TensorView;
 
 /// Library version
@@ -86,9 +89,6 @@ pub struct TensorHardware {
 
     /// Work-stealing router
     pub router: SparseRouter,
-
-    /// Next buffer ID allocator
-    next_buffer_id: u64,
 }
 
 impl TensorHardware {
@@ -98,7 +98,6 @@ impl TensorHardware {
             validator: GovernanceValidator::new(),
             materializer: MaterializationBarrier::new(),
             router: SparseRouter::new(),
-            next_buffer_id: 1,
         }
     }
 
@@ -110,13 +109,12 @@ impl TensorHardware {
             return Err(HardwareError::ZeroElementShape);
         }
 
-        let element_count: usize = shape.iter().product();
+        let element_count = crate::memory::checked_element_count(&shape)?;
         if element_count == 0 {
             return Err(HardwareError::ZeroElementShape);
         }
 
-        let buffer_id = self.next_buffer_id;
-        self.next_buffer_id += 1;
+        let buffer_id = crate::buffer::fresh_buffer_id()?;
 
         let buffer = Buffer::allocate(buffer_id, element_count)?;
 
@@ -134,10 +132,10 @@ impl TensorHardware {
         Ok((buffer, view))
     }
 
-    /// Release exclusive tensor (deallocate when refcount reaches 0)
+    /// Validate release permissions. Drop the Buffer to release its storage.
     pub fn release(&mut self, view: &TensorView, buffer: &Buffer) -> Result<()> {
         self.validator.validate_release(view, buffer)?;
-        // Arc is automatically dropped when view is dropped
+        // This borrowed operation does not drop the caller's buffer.
         Ok(())
     }
 
@@ -151,10 +149,11 @@ impl TensorHardware {
     pub fn slice(
         &mut self,
         view: &TensorView,
-        _buffer: &Buffer,
+        buffer: &Buffer,
         ranges: &[(usize, usize, usize)],
     ) -> Result<TensorView> {
         self.validator.validate_slice(view, ranges)?;
+        self.validator.validate_view(view, buffer)?;
         view.slice(ranges)
     }
 
@@ -172,10 +171,11 @@ impl TensorHardware {
     pub fn transpose(
         &mut self,
         view: &TensorView,
-        _buffer: &Buffer,
+        buffer: &Buffer,
         permutation: &[usize],
     ) -> Result<TensorView> {
         self.validator.validate_transpose(view, permutation)?;
+        self.validator.validate_view(view, buffer)?;
         view.transpose(permutation)
     }
 
@@ -183,21 +183,18 @@ impl TensorHardware {
     pub fn reshape(
         &mut self,
         view: &TensorView,
-        _buffer: &Buffer,
+        buffer: &Buffer,
         new_shape: Vec<usize>,
     ) -> Result<TensorView> {
         self.validator.validate_reshape(view, &new_shape)?;
+        self.validator.validate_view(view, buffer)?;
         view.reshape(new_shape)
     }
 
     /// Get element (read-only)
-    pub fn get(
-        &mut self,
-        view: &TensorView,
-        buffer: &Buffer,
-        indices: &[usize],
-    ) -> Result<f32> {
-        self.validator.validate_access(view, buffer, indices, false)?;
+    pub fn get(&mut self, view: &TensorView, buffer: &Buffer, indices: &[usize]) -> Result<f32> {
+        self.validator
+            .validate_access(view, buffer, indices, false)?;
         let addr = view.address_for(indices)?;
         Ok(buffer.get_unchecked(addr))
     }
@@ -206,14 +203,14 @@ impl TensorHardware {
     pub fn set(
         &mut self,
         view: &TensorView,
-        buffer: &Buffer,
+        buffer: &mut Buffer,
         indices: &[usize],
         value: f32,
     ) -> Result<()> {
-        self.validator.validate_access(view, buffer, indices, true)?;
+        self.validator
+            .validate_access(view, buffer, indices, true)?;
         let addr = view.address_for(indices)?;
-        buffer.set_unchecked(addr, value);
-        Ok(())
+        buffer.set(addr, value)
     }
 }
 
@@ -240,9 +237,9 @@ mod tests {
     #[test]
     fn test_exclusive_set_get() {
         let mut hw = TensorHardware::new();
-        let (buffer, view) = hw.allocate(vec![10, 10]).unwrap();
+        let (mut buffer, view) = hw.allocate(vec![10, 10]).unwrap();
 
-        hw.set(&view, &buffer, &[2, 3], 42.0).unwrap();
+        hw.set(&view, &mut buffer, &[2, 3], 42.0).unwrap();
         let val = hw.get(&view, &buffer, &[2, 3]).unwrap();
         assert_eq!(val, 42.0);
     }
@@ -250,10 +247,10 @@ mod tests {
     #[test]
     fn test_shared_cannot_mutate() {
         let mut hw = TensorHardware::new();
-        let (buffer, view) = hw.allocate(vec![10, 10]).unwrap();
+        let (mut buffer, view) = hw.allocate(vec![10, 10]).unwrap();
         let shared = hw.create_view(&view, &buffer).unwrap();
 
-        let result = hw.set(&shared, &buffer, &[2, 3], 42.0);
+        let result = hw.set(&shared, &mut buffer, &[2, 3], 42.0);
         assert!(result.is_err());
     }
 
@@ -262,7 +259,9 @@ mod tests {
         let mut hw = TensorHardware::new();
         let (buffer, view) = hw.allocate(vec![3, 4, 5]).unwrap();
 
-        let sliced = hw.slice(&view, &buffer, &[(0, 2, 1), (0, 3, 1), (0, 4, 1)]).unwrap();
+        let sliced = hw
+            .slice(&view, &buffer, &[(0, 2, 1), (0, 3, 1), (0, 4, 1)])
+            .unwrap();
         assert_eq!(sliced.shape, vec![2, 3, 4]);
 
         let transposed = hw.transpose(&sliced, &buffer, &[2, 0, 1]).unwrap();

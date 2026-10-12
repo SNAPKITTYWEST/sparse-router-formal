@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later OR Apache-2.0
+// Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
+// CLONE_GATE: sparse-router-formal::rust::tensor-hw::examples::core_operations.rs
 //! Core tensor hardware operations example
 //!
 //! Demonstrates:
@@ -18,24 +21,28 @@ fn main() -> Result<()> {
 
     // Example 1: Allocate and set values
     println!("1. Allocate 10x10 tensor");
-    let (buffer, view) = hw.allocate(vec![10, 10])?;
+    let (mut buffer, view) = hw.allocate(vec![10, 10])?;
     println!("   Shape: {:?}", view.shape);
     println!("   Element count: {}", view.element_count());
-    println!("   Exclusive: {}, Contiguous: {}\n", view.is_exclusive(), view.is_contiguous());
+    println!(
+        "   Exclusive: {}, Contiguous: {}\n",
+        view.is_exclusive(),
+        view.is_contiguous()
+    );
 
     // Example 2: Element access
     println!("2. Set and get elements");
-    hw.set(&view, &buffer, &[2, 3], 42.0)?;
+    hw.set(&view, &mut buffer, &[2, 3], 42.0)?;
     let val = hw.get(&view, &buffer, &[2, 3])?;
     println!("   Set [2,3] = 42.0");
     println!("   Get [2,3] = {}\n", val);
 
     // Example 3: Shared view (zero-copy)
-    println!("3. Create shared view (zero-copy Arc::clone)");
+    println!("3. Create shared descriptor (zero-copy)");
     let shared = hw.create_view(&view, &buffer)?;
     println!("   Shared exclusive: {}", shared.is_exclusive());
     println!("   Can read from shared: OK");
-    let result = hw.set(&shared, &buffer, &[2, 3], 50.0);
+    let result = hw.set(&shared, &mut buffer, &[2, 3], 50.0);
     println!("   Try to write to shared: {:?}\n", result);
 
     // Example 4: Slice operation
@@ -49,7 +56,10 @@ fn main() -> Result<()> {
     println!("5. Transpose dimensions [1, 0]");
     let transposed = hw.transpose(&view, &buffer, &[1, 0])?;
     println!("   New shape: {:?}", transposed.shape);
-    println!("   Contiguous (canonical): {}\n", transposed.is_contiguous());
+    println!(
+        "   Contiguous (canonical): {}\n",
+        transposed.is_contiguous()
+    );
 
     // Example 6: Materialize non-canonical
     println!("6. Materialize transposed tensor");
@@ -69,8 +79,8 @@ fn main() -> Result<()> {
     // Example 8: Sparse routing
     println!("8. Work-stealing router (RAW_ROUTE)");
     let mut router = SparseRouter::new();
-    router.register_worker(WorkerId(0), 0.5);
-    router.register_worker(WorkerId(1), 1.5);
+    router.register_worker(WorkerId(0), 0.5).unwrap();
+    router.register_worker(WorkerId(1), 1.5).unwrap();
 
     let task1 = Task {
         id: 1,
@@ -83,8 +93,8 @@ fn main() -> Result<()> {
         size: 1024,
     };
 
-    let w1 = router.route(&task1);
-    let w2 = router.route(&task2);
+    let w1 = router.route(&task1).unwrap();
+    let w2 = router.route(&task2).unwrap();
     println!("   Task 1 routed to: {:?}", w1);
     println!("   Task 2 (same region) routed to: {:?}", w2);
     println!("   Region consistency: {}\n", w1 == w2);
@@ -108,7 +118,10 @@ fn main() -> Result<()> {
     println!("   Access [100, 100] (out of bounds): {:?}", oob_result);
 
     let bad_slice = hw.slice(&view, &buffer, &[(0, 100, 1), (0, 10, 1)]);
-    println!("   Slice [0:100, 0:10] (out of bounds): {}", bad_slice.is_err());
+    println!(
+        "   Slice [0:100, 0:10] (out of bounds): {}",
+        bad_slice.is_err()
+    );
 
     println!("\nAll examples completed successfully!");
     Ok(())

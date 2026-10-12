@@ -1,9 +1,41 @@
+// SPDX-License-Identifier: GPL-3.0-or-later OR Apache-2.0
+// Copyright (C) 2026 SNAPKITTYWEST / Sovereign Kernel Project
+// CLONE_GATE: sparse-router-formal::rust::tensor-hw::src::memory.rs
 //! Memory address calculation and stride handling
 //!
 //! Core address formula:
 //!   addr = base + offset + Σ(index[i] * stride[i])
 
 use crate::error::{HardwareError, Result};
+
+pub(crate) fn checked_element_count(shape: &[usize]) -> Result<usize> {
+    if shape.is_empty() || shape.contains(&0) {
+        return Err(HardwareError::ZeroElementShape);
+    }
+    shape.iter().try_fold(1usize, |n, &dim| {
+        n.checked_mul(dim)
+            .ok_or(HardwareError::GovernanceViolation {
+                reason: "Shape size overflow",
+            })
+    })
+}
+
+pub(crate) fn has_canonical_strides(shape: &[usize], strides: &[usize]) -> bool {
+    if shape.is_empty() || shape.len() != strides.len() {
+        return false;
+    }
+    let mut expected = 1usize;
+    for (&dimension, &stride) in shape.iter().zip(strides).rev() {
+        if dimension == 0 || stride != expected {
+            return false;
+        }
+        match expected.checked_mul(dimension) {
+            Some(next) => expected = next,
+            None => return false,
+        }
+    }
+    true
+}
 
 /// Memory domain for address allocation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +92,24 @@ impl MemoryLayout {
         if shape.iter().any(|&s| s == 0) {
             return Err(HardwareError::ZeroElementShape);
         }
+        checked_element_count(&shape)?;
+        let last = shape
+            .iter()
+            .zip(&strides)
+            .try_fold(offset, |addr, (&dim, &stride)| {
+                (dim - 1)
+                    .checked_mul(stride)
+                    .and_then(|delta| addr.checked_add(delta))
+                    .ok_or(HardwareError::GovernanceViolation {
+                        reason: "Address overflow",
+                    })
+            })?;
+        if last >= capacity {
+            return Err(HardwareError::AddressOutOfBounds {
+                address: last,
+                capacity,
+            });
+        }
 
         // Validate offset is within capacity
         if offset >= capacity {
@@ -83,7 +133,9 @@ impl MemoryLayout {
     /// Calculate total number of elements
     #[inline]
     pub fn element_count(&self) -> usize {
-        self.shape.iter().product()
+        self.shape
+            .iter()
+            .fold(1usize, |n, &dim| n.saturating_mul(dim))
     }
 
     /// Calculate address for multi-dimensional index
@@ -178,7 +230,7 @@ impl MemoryLayout {
                 });
             }
 
-            let new_size = (end - start + step - 1) / step; // Ceiling division
+            let new_size = (end - start).div_ceil(step); // Ceiling division
             new_shape.push(new_size);
 
             // Update offset for this dimension
@@ -263,7 +315,7 @@ mod tests {
     fn test_address_calculation() {
         let layout = MemoryLayout::new(1000, 0, vec![10, 10], vec![10, 1]).unwrap();
         let addr = layout.address_for(&[2, 3]).unwrap();
-        assert_eq!(addr, 2 * 10 + 3 * 1); // 23
+        assert_eq!(addr, 23);
     }
 
     #[test]

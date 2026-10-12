@@ -40,6 +40,7 @@ static void bench_routing(uint32_t num_workers, uint32_t num_tasks,
 
     struct timespec t0, t1;
     timespec_get(&t0, TIME_UTC);
+    uint32_t accepted = 0, rejected = 0;
 
     for (uint32_t i = 0; i < num_tasks; i++) {
         task_t t = {
@@ -50,7 +51,8 @@ static void bench_routing(uint32_t num_workers, uint32_t num_tasks,
             .priority       = i % 4,
         };
         state->global_tick = i;
-        raw_route(state, &t);
+        if (raw_route(state, &t) == WORKER_NONE) rejected++;
+        else accepted++;
     }
 
     timespec_get(&t1, TIME_UTC);
@@ -59,8 +61,9 @@ static void bench_routing(uint32_t num_workers, uint32_t num_tasks,
 
     printf("workers=%u tasks=%u regions=%u edges=%u\n",
            num_workers, num_tasks, num_regions, edges);
-    printf("  elapsed: %.6f s  (%.0f routes/sec)\n",
-           elapsed, num_tasks / elapsed);
+    printf("  elapsed: %.6f s  (%.0f accepted routes/sec)\n",
+           elapsed, elapsed > 0 ? accepted / elapsed : 0.0);
+    printf("  accepted: %u  backpressure: %u\n", accepted, rejected);
 
     uint32_t total = 0, max_q = 0, min_q = UINT32_MAX;
     for (uint32_t i = 0; i < num_workers; i++) {
